@@ -1,13 +1,21 @@
 const ODSAY_KEY = encodeURIComponent('9vT5b5ryWK0WowAXS953+g');
-let leafletMap     = null;
-let currentMarkers = [];
-let currentLayers  = [];
 
+let leafletMap      = null;
+let currentMarkers  = [];
+let currentLayers   = [];
+let transitMode     = 'car';       // 'car' | 'transit' | 'longdist'
+let departureCoords = null;        // { lat, lng, name }
+let currentDest     = null;
+
+/* ===== 탭 초기화 ===== */
 function initTransitTab(dest) {
+  currentDest = dest;
+
   const destLabel = document.getElementById('transitDestLabel');
   if (destLabel) destLabel.textContent = dest.displayName || dest.name;
 
   initLeafletMap(dest);
+  initModeButtons();
 
   const btn = document.getElementById('searchTransitBtn');
   if (btn) {
@@ -16,38 +24,65 @@ function initTransitTab(dest) {
     newBtn.addEventListener('click', () => searchRoute(dest));
   }
 
-  document.getElementById('departureInput')?.addEventListener('keydown', e => {
-    if (e.key === 'Enter') searchRoute(dest);
+  const input = document.getElementById('departureInput');
+  if (input) {
+    const newInput = input.cloneNode(true);
+    input.parentNode.replaceChild(newInput, input);
+    newInput.addEventListener('keydown', e => { if (e.key === 'Enter') searchRoute(dest); });
+  }
+
+  document.getElementById('transitResults').innerHTML =
+    '<div class="transit-hint">출발지를 입력하고 <strong>경로 찾기</strong>를 눌러보세요</div>';
+}
+
+function initModeButtons() {
+  document.querySelectorAll('.transit-mode-btn').forEach(btn => {
+    const newBtn = btn.cloneNode(true);
+    btn.parentNode.replaceChild(newBtn, btn);
+    newBtn.addEventListener('click', () => {
+      document.querySelectorAll('.transit-mode-btn').forEach(b => b.classList.remove('active'));
+      newBtn.classList.add('active');
+      transitMode = newBtn.dataset.mode;
+      if (departureCoords && currentDest) searchRoute(currentDest);
+    });
   });
 }
 
+/* ===== Leaflet 지도 ===== */
 function initLeafletMap(dest) {
   const container = document.getElementById('kakaoMap');
   if (!container) return;
 
   if (leafletMap) {
     leafletMap.setView([dest.lat, dest.lon], 9);
+    clearMapLayers();
+    addDestMarker(dest);
     return;
   }
 
   leafletMap = L.map('kakaoMap').setView([dest.lat, dest.lon], 9);
-
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
     maxZoom: 19,
   }).addTo(leafletMap);
 
-  const destIcon = L.divIcon({
-    html: `<div style="background:#ff6b35;color:#fff;border-radius:50% 50% 50% 0;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:14px;transform:rotate(-45deg);box-shadow:0 2px 8px rgba(0,0,0,0.4)"><span style="transform:rotate(45deg)">🏁</span></div>`,
-    iconSize: [28, 28],
-    iconAnchor: [14, 28],
-    className: '',
-  });
+  addDestMarker(dest);
+}
 
-  L.marker([dest.lat, dest.lon], { icon: destIcon })
+function addDestMarker(dest) {
+  const icon = makeIcon('🏁', '#ff6b35');
+  const m = L.marker([dest.lat, dest.lon], { icon })
     .addTo(leafletMap)
     .bindPopup(`<strong>${dest.displayName || dest.name}</strong>`)
     .openPopup();
+  currentMarkers.push(m);
+}
+
+function makeIcon(emoji, bg) {
+  return L.divIcon({
+    html: `<div style="background:${bg};color:#fff;border-radius:50% 50% 50% 0;width:30px;height:30px;display:flex;align-items:center;justify-content:center;font-size:15px;transform:rotate(-45deg);box-shadow:0 2px 8px rgba(0,0,0,.4)"><span style="transform:rotate(45deg)">${emoji}</span></div>`,
+    iconSize: [30, 30], iconAnchor: [15, 30], className: '',
+  });
 }
 
 function clearMapLayers() {
@@ -57,12 +92,13 @@ function clearMapLayers() {
   currentLayers  = [];
 }
 
+/* ===== 경로 찾기 메인 ===== */
 async function searchRoute(dest) {
   const input   = document.getElementById('departureInput');
   const results = document.getElementById('transitResults');
   const btn     = document.getElementById('searchTransitBtn');
+  const query   = input?.value.trim();
 
-  const query = input?.value.trim();
   if (!query) {
     results.innerHTML = '<div class="transit-hint">출발지를 입력해주세요</div>';
     return;
@@ -77,28 +113,100 @@ async function searchRoute(dest) {
       results.innerHTML = '<div class="transit-empty">⚠️ 출발지를 찾을 수 없어요. 더 구체적으로 입력해보세요.</div>';
       return;
     }
+    departureCoords = { ...coords, name: query };
 
-    drawDepartureMarker(coords, query);
+    clearMapLayers();
+    addDestMarker(dest);
+    addStartMarker(coords, query);
 
-    const paths = await searchODsay(coords.lng, coords.lat, dest.lon, dest.lat);
-    if (!paths || paths.length === 0) {
-      showLongDistance(dest, results);
-      return;
+    if (transitMode === 'car') {
+      await showCarRoute(coords, dest, results);
+    } else if (transitMode === 'transit') {
+      await showTransitRoute(coords, dest, results);
+    } else {
+      showLongDistance(coords, dest, results);
     }
-
-    renderTransitPaths(paths, results);
   } catch (err) {
     console.error('경로 탐색 오류:', err);
-    showLongDistance(dest, results);
+    results.innerHTML = '<div class="transit-empty">⚠️ 오류가 발생했어요. 다시 시도해주세요.</div>';
   } finally {
     if (btn) btn.disabled = false;
   }
 }
 
-/* Nominatim (OpenStreetMap) 지오코딩 — API 키 불필요 */
+function addStartMarker(coords, label) {
+  const icon = makeIcon('🚀', '#7fb3f5');
+  const m = L.marker([coords.lat, coords.lng], { icon })
+    .addTo(leafletMap)
+    .bindPopup(`<strong>🚀 ${label}</strong>`)
+    .openPopup();
+  currentMarkers.push(m);
+}
+
+/* ===== 자가용 경로 (OSRM) ===== */
+async function showCarRoute(start, dest, container) {
+  try {
+    const url  = `https://router.project-osrm.org/route/v1/driving/${start.lng},${start.lat};${dest.lon},${dest.lat}?overview=full&geometries=geojson`;
+    const res  = await fetch(url);
+    const data = await res.json();
+
+    if (data.routes && data.routes.length > 0) {
+      const route    = data.routes[0];
+      const coords   = route.geometry.coordinates.map(([lng, lat]) => [lat, lng]);
+      const distKm   = (route.distance / 1000).toFixed(1);
+      const durMin   = Math.round(route.duration / 60);
+      const durH     = Math.floor(durMin / 60);
+      const durM     = durMin % 60;
+      const durText  = durH > 0 ? `${durH}시간 ${durM}분` : `${durM}분`;
+
+      const poly = L.polyline(coords, { color: '#ff6b35', weight: 5, opacity: 0.8 }).addTo(leafletMap);
+      currentLayers.push(poly);
+      leafletMap.fitBounds(poly.getBounds(), { padding: [30, 30] });
+
+      const kakaoCarUrl = `https://map.kakao.com/link/by/car/${encodeURIComponent(start.name)},${start.lat},${start.lng}/${encodeURIComponent(dest.displayName || dest.name)},${dest.lat},${dest.lon}`;
+      const naverCarUrl = `https://map.naver.com/v5/directions/${start.lng},${start.lat},${encodeURIComponent(start.name)}//${dest.lon},${dest.lat},${encodeURIComponent(dest.displayName || dest.name)}/-/car`;
+
+      container.innerHTML = `
+        <div class="car-route-card">
+          <div class="car-route-header">
+            <span class="car-route-icon">🚗</span>
+            <div class="car-route-info">
+              <div class="car-route-time">${durText}</div>
+              <div class="car-route-dist">약 ${distKm} km</div>
+            </div>
+          </div>
+          <div class="car-route-path">
+            <span class="car-node start">${start.name}</span>
+            <span class="car-arrow">→</span>
+            <span class="car-node end">${dest.displayName || dest.name}</span>
+          </div>
+          <div class="car-nav-links">
+            <a class="car-nav-btn kakao" href="${kakaoCarUrl}" target="_blank">🗺️ 카카오맵 내비</a>
+            <a class="car-nav-btn naver" href="${naverCarUrl}" target="_blank">🟢 네이버맵 내비</a>
+          </div>
+        </div>`;
+    } else {
+      container.innerHTML = '<div class="transit-empty">자가용 경로를 찾지 못했어요.</div>';
+    }
+  } catch {
+    container.innerHTML = '<div class="transit-empty">자가용 경로 조회 중 오류가 발생했어요.</div>';
+  }
+}
+
+/* ===== 대중교통 경로 (ODsay) ===== */
+async function showTransitRoute(start, dest, container) {
+  const paths = await searchODsay(start.lng, start.lat, dest.lon, dest.lat);
+  if (!paths || paths.length === 0) {
+    showLongDistance(start, dest, container);
+  } else {
+    renderTransitPaths(paths, container);
+  }
+}
+
+/* ===== Nominatim 지오코딩 ===== */
 async function geocodeQuery(query) {
   try {
-    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query + ' 한국')}&format=json&limit=1&accept-language=ko`;
+    const url  = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query + ' 한국')}&format=json&limit=1&accept-language=ko`;
     const res  = await fetch(url, { headers: { 'Accept-Language': 'ko' } });
     const data = await res.json();
     if (data && data.length > 0) {
@@ -110,48 +218,26 @@ async function geocodeQuery(query) {
   }
 }
 
-function drawDepartureMarker(coords, label) {
-  if (!leafletMap) return;
-  clearMapLayers();
-
-  const startIcon = L.divIcon({
-    html: `<div style="background:#7fb3f5;color:#fff;border-radius:50% 50% 50% 0;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:14px;transform:rotate(-45deg);box-shadow:0 2px 8px rgba(0,0,0,0.4)"><span style="transform:rotate(45deg)">🚀</span></div>`,
-    iconSize: [28, 28],
-    iconAnchor: [14, 28],
-    className: '',
-  });
-
-  const marker = L.marker([coords.lat, coords.lng], { icon: startIcon })
-    .addTo(leafletMap)
-    .bindPopup(`<strong>🚀 ${label}</strong>`)
-    .openPopup();
-
-  currentMarkers.push(marker);
-}
-
+/* ===== ODsay API ===== */
 async function searchODsay(startX, startY, endX, endY) {
   const url = `/odsay/v1/api/searchPubTransPathT?apiKey=${ODSAY_KEY}&SX=${startX}&SY=${startY}&EX=${endX}&EY=${endY}&SearchType=0&SearchPathType=0`;
-
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10000);
-
   try {
     const res = await fetch(url, { signal: controller.signal });
     clearTimeout(timeout);
     if (!res.ok) return null;
     const data = await res.json();
-    if (data?.result?.path) return data.result.path;
-    return null;
+    return data?.result?.path || null;
   } catch (e) {
     clearTimeout(timeout);
-    if (e.name === 'AbortError') console.warn('ODsay 타임아웃');
     return null;
   }
 }
 
+/* ===== 대중교통 경로 렌더링 ===== */
 function renderTransitPaths(paths, container) {
   const colors = ['#ff6b35', '#7fb3f5', '#6de0a0', '#ffb347', '#e879f9'];
-
   container.innerHTML = `<div class="transit-results-title">🚌 대중교통 경로 ${paths.length}개</div>`;
 
   paths.slice(0, 5).forEach((path, idx) => {
@@ -199,13 +285,11 @@ function renderTransitPaths(paths, container) {
       </div>
       <div class="transit-subpath">${subPathDetails}</div>
     `;
-
     card.addEventListener('click', () => {
       document.querySelectorAll('.transit-card').forEach(c => c.classList.remove('selected'));
       card.classList.add('selected');
       drawPathOnMap(subPaths, colors[idx % colors.length]);
     });
-
     container.appendChild(card);
   });
 
@@ -217,30 +301,22 @@ function renderTransitPaths(paths, container) {
 
 function drawPathOnMap(subPaths, color) {
   if (!leafletMap) return;
-
   currentLayers.forEach(l => leafletMap.removeLayer(l));
   currentLayers = [];
 
   const allLatLngs = [];
-
   subPaths.forEach(sp => {
-    const stops  = sp.passStopList?.stations || [];
-    const latlngs = stops
+    const latlngs = (sp.passStopList?.stations || [])
       .filter(s => s.x && s.y)
       .map(s => [parseFloat(s.y), parseFloat(s.x)]);
 
     if (latlngs.length >= 2) {
-      const lineColor  = sp.trafficType === 1 ? '#4a90d9' : color;
-      const dashArray  = sp.trafficType === 3 ? '6, 8' : null;
-      const weight     = sp.trafficType === 1 ? 5 : 4;
-
       const poly = L.polyline(latlngs, {
-        color: lineColor,
-        weight,
+        color: sp.trafficType === 1 ? '#4a90d9' : color,
+        weight: sp.trafficType === 1 ? 5 : 4,
         opacity: 0.85,
-        dashArray,
+        dashArray: sp.trafficType === 3 ? '6, 8' : null,
       }).addTo(leafletMap);
-
       currentLayers.push(poly);
       allLatLngs.push(...latlngs);
     }
@@ -251,18 +327,52 @@ function drawPathOnMap(subPaths, color) {
   }
 }
 
-function showLongDistance(dest, container) {
-  const name = dest.displayName || dest.name;
+/* ===== 장거리 교통 (출발지·도착지 자동 적용) ===== */
+function showLongDistance(start, dest, container) {
+  const destName  = dest.displayName || dest.name;
+  const startName = start?.name || '';
+
+  /* 네이버 지도 — 출발지·도착지 좌표 자동 적용 */
+  const naverTransitUrl = start
+    ? `https://map.naver.com/v5/directions/${start.lng},${start.lat},${encodeURIComponent(startName)}//${dest.lon},${dest.lat},${encodeURIComponent(destName)}/-/transit`
+    : `https://map.naver.com/v5/search/${encodeURIComponent(destName)}`;
+
+  const naverCarUrl = start
+    ? `https://map.naver.com/v5/directions/${start.lng},${start.lat},${encodeURIComponent(startName)}//${dest.lon},${dest.lat},${encodeURIComponent(destName)}/-/car`
+    : '';
+
+  /* 코레일 — 역 이름 추출 시도 */
+  const korailUrl = `https://www.korail.com/ticket/main.do`;
+
+  /* SRT */
+  const srtUrl = `https://www.srt.co.kr`;
+
+  /* 버스타고 */
+  const bustagoUrl = `https://www.bustago.or.kr`;
+
+  /* 네이버 항공 */
+  const flightUrl = `https://flight.naver.com`;
 
   container.innerHTML = `
     <div class="transit-long-distance">
-      <div class="transit-ld-title">🗺️ ${name}(으)로 가는 방법</div>
-      <div class="transit-ld-sub">대중교통 직결 경로를 찾지 못했어요. 아래 링크로 직접 검색해보세요.</div>
+      <div class="transit-ld-title">🗺️ ${destName}(으)로 가는 방법</div>
+      <div class="transit-ld-sub">${startName ? `<strong>${startName}</strong> → <strong>${destName}</strong>` : '출발지를 입력하면 자동으로 경로가 적용됩니다'}</div>
+
+      ${naverTransitUrl ? `
+      <div class="transit-ld-section-title">🗺️ 통합 경로 검색</div>
+      <div class="transit-ld-links" style="margin-bottom:12px">
+        <a class="transit-link-btn" style="background:linear-gradient(135deg,#03c75a,#028a3e)"
+           href="${naverTransitUrl}" target="_blank">🚇 네이버맵 대중교통 경로</a>
+        ${naverCarUrl ? `<a class="transit-link-btn" style="background:linear-gradient(135deg,#ff6b35,#e85d04)"
+           href="${naverCarUrl}" target="_blank">🚗 네이버맵 자가용 경로</a>` : ''}
+      </div>` : ''}
+
+      <div class="transit-ld-section-title">🎫 직접 예매</div>
       <div class="transit-ld-links">
-        <a class="transit-link-btn train" href="https://www.korail.com/ticket/main.do" target="_blank">🚄 코레일 기차 예매</a>
-        <a class="transit-link-btn express" href="https://www.srt.co.kr" target="_blank">🚅 SRT 고속열차</a>
-        <a class="transit-link-btn intercity" href="https://www.bustago.or.kr" target="_blank">🚌 버스타고 시외/고속</a>
-        <a class="transit-link-btn flight" href="https://flight.naver.com/?from=GMP&to=CJU" target="_blank">✈️ 항공권 검색</a>
+        <a class="transit-link-btn train"    href="${korailUrl}"  target="_blank">🚄 코레일 기차 예매</a>
+        <a class="transit-link-btn express"  href="${srtUrl}"     target="_blank">🚅 SRT 고속열차</a>
+        <a class="transit-link-btn intercity" href="${bustagoUrl}" target="_blank">🚌 버스타고 시외·고속</a>
+        <a class="transit-link-btn flight"   href="${flightUrl}"  target="_blank">✈️ 네이버 항공권</a>
       </div>
     </div>
   `;
