@@ -203,10 +203,45 @@ async function showTransitRoute(start, dest, container) {
   }
 }
 
-/* ===== Nominatim 지오코딩 ===== */
+/* ===== Nominatim 지오코딩 — 단계적 단순화 ===== */
 async function geocodeQuery(query) {
+  const attempts = buildSearchAttempts(query);
+  for (const q of attempts) {
+    const result = await nominatimSearch(q);
+    if (result) return result;
+  }
+  return null;
+}
+
+function buildSearchAttempts(query) {
+  const attempts = [];
+  const cleaned  = query.trim();
+
+  attempts.push(cleaned + ' 한국');
+  attempts.push(cleaned);
+
+  /* 뒤 단어 하나씩 제거 */
+  const words = cleaned.split(/\s+/);
+  for (let i = words.length - 1; i >= 1; i--) {
+    attempts.push(words.slice(0, i).join(' ') + ' 한국');
+  }
+
+  /* 핵심 키워드까지만 추출 */
+  const keywords = ['대학교', '대학', '역', '터미널', '병원', '공항', '시청', '구청', '군청', '호텔', '리조트'];
+  for (const kw of keywords) {
+    const idx = cleaned.indexOf(kw);
+    if (idx > 0) {
+      attempts.push(cleaned.substring(0, idx + kw.length) + ' 한국');
+      break;
+    }
+  }
+
+  return [...new Set(attempts)];
+}
+
+async function nominatimSearch(query) {
   try {
-    const url  = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query + ' 한국')}&format=json&limit=1&accept-language=ko`;
+    const url  = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1&countrycodes=kr`;
     const res  = await fetch(url, { headers: { 'Accept-Language': 'ko' } });
     const data = await res.json();
     if (data && data.length > 0) {
