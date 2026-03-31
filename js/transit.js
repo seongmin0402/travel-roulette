@@ -32,6 +32,19 @@ function loadKakaoMap(callback) {
     callback();
     return;
   }
+  if (!window.kakao) {
+    console.error('Kakao Maps SDK가 로드되지 않았습니다. 도메인 등록을 확인하세요.');
+    const mapEl = document.getElementById('kakaoMap');
+    if (mapEl) {
+      mapEl.style.display = 'flex';
+      mapEl.style.alignItems = 'center';
+      mapEl.style.justifyContent = 'center';
+      mapEl.style.color = '#aaa';
+      mapEl.style.fontSize = '14px';
+      mapEl.innerHTML = '🗺️ 지도를 불러올 수 없습니다.<br>카카오 개발자 콘솔에서 도메인을 등록해주세요.';
+    }
+    return;
+  }
   kakao.maps.load(() => {
     kakaoLoaded = true;
     callback();
