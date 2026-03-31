@@ -23,17 +23,7 @@ function initTransitTab(dest) {
 }
 
 function loadKakaoMap(callback) {
-  if (kakaoLoaded && window.kakao?.maps) {
-    callback();
-    return;
-  }
-  if (window.kakao?.maps) {
-    kakaoLoaded = true;
-    callback();
-    return;
-  }
-  if (!window.kakao) {
-    console.error('Kakao Maps SDK가 로드되지 않았습니다. 도메인 등록을 확인하세요.');
+  if (!window.kakao || !window.kakao.maps) {
     const mapEl = document.getElementById('kakaoMap');
     if (mapEl) {
       mapEl.style.display = 'flex';
@@ -45,10 +35,8 @@ function loadKakaoMap(callback) {
     }
     return;
   }
-  kakao.maps.load(() => {
-    kakaoLoaded = true;
-    callback();
-  });
+  kakaoLoaded = true;
+  callback();
 }
 
 function initMap(dest) {
