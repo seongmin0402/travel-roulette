@@ -1,14 +1,13 @@
 const ODSAY_KEY = encodeURIComponent('9vT5b5ryWK0WowAXS953+g');
-let kakaoMapInstance = null;
-let kakaoLoaded      = false;
-let currentMarkers   = [];
-let currentPolylines = [];
+let leafletMap     = null;
+let currentMarkers = [];
+let currentLayers  = [];
 
 function initTransitTab(dest) {
   const destLabel = document.getElementById('transitDestLabel');
   if (destLabel) destLabel.textContent = dest.displayName || dest.name;
 
-  loadKakaoMap(() => initMap(dest));
+  initLeafletMap(dest);
 
   const btn = document.getElementById('searchTransitBtn');
   if (btn) {
@@ -22,60 +21,46 @@ function initTransitTab(dest) {
   });
 }
 
-function loadKakaoMap(callback) {
-  if (!window.kakao || !window.kakao.maps) {
-    const mapEl = document.getElementById('kakaoMap');
-    if (mapEl) {
-      mapEl.style.display = 'flex';
-      mapEl.style.alignItems = 'center';
-      mapEl.style.justifyContent = 'center';
-      mapEl.style.color = '#aaa';
-      mapEl.style.fontSize = '14px';
-      mapEl.innerHTML = '🗺️ 지도를 불러올 수 없습니다.<br>카카오 개발자 콘솔에서 도메인을 등록해주세요.';
-    }
-    return;
-  }
-  kakaoLoaded = true;
-  callback();
-}
-
-function initMap(dest) {
+function initLeafletMap(dest) {
   const container = document.getElementById('kakaoMap');
   if (!container) return;
 
-  if (kakaoMapInstance) {
-    kakaoMapInstance.setCenter(new kakao.maps.LatLng(dest.lat, dest.lon));
+  if (leafletMap) {
+    leafletMap.setView([dest.lat, dest.lon], 9);
     return;
   }
 
-  const options = {
-    center: new kakao.maps.LatLng(dest.lat, dest.lon),
-    level: 9,
-  };
-  kakaoMapInstance = new kakao.maps.Map(container, options);
+  leafletMap = L.map('kakaoMap').setView([dest.lat, dest.lon], 9);
 
-  const marker = new kakao.maps.Marker({
-    position: new kakao.maps.LatLng(dest.lat, dest.lon),
-    map: kakaoMapInstance,
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    maxZoom: 19,
+  }).addTo(leafletMap);
+
+  const destIcon = L.divIcon({
+    html: `<div style="background:#ff6b35;color:#fff;border-radius:50% 50% 50% 0;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:14px;transform:rotate(-45deg);box-shadow:0 2px 8px rgba(0,0,0,0.4)"><span style="transform:rotate(45deg)">🏁</span></div>`,
+    iconSize: [28, 28],
+    iconAnchor: [14, 28],
+    className: '',
   });
 
-  const infowindow = new kakao.maps.InfoWindow({
-    content: `<div style="padding:6px 10px;font-size:13px;font-weight:700;color:#333;">${dest.displayName || dest.name}</div>`,
-  });
-  infowindow.open(kakaoMapInstance, marker);
+  L.marker([dest.lat, dest.lon], { icon: destIcon })
+    .addTo(leafletMap)
+    .bindPopup(`<strong>${dest.displayName || dest.name}</strong>`)
+    .openPopup();
 }
 
-function clearMap() {
-  currentMarkers.forEach(m => m.setMap(null));
-  currentPolylines.forEach(p => p.setMap(null));
+function clearMapLayers() {
+  currentMarkers.forEach(m => leafletMap?.removeLayer(m));
+  currentLayers.forEach(l => leafletMap?.removeLayer(l));
   currentMarkers = [];
-  currentPolylines = [];
+  currentLayers  = [];
 }
 
 async function searchRoute(dest) {
-  const input = document.getElementById('departureInput');
+  const input   = document.getElementById('departureInput');
   const results = document.getElementById('transitResults');
-  const btn = document.getElementById('searchTransitBtn');
+  const btn     = document.getElementById('searchTransitBtn');
 
   const query = input?.value.trim();
   if (!query) {
@@ -110,35 +95,37 @@ async function searchRoute(dest) {
   }
 }
 
+/* Nominatim (OpenStreetMap) 지오코딩 — API 키 불필요 */
 async function geocodeQuery(query) {
-  return new Promise((resolve) => {
-    const geocoder = new kakao.maps.services.Geocoder();
-    geocoder.addressSearch(query, (result, status) => {
-      if (status === kakao.maps.services.Status.OK && result.length > 0) {
-        resolve({ lat: parseFloat(result[0].y), lng: parseFloat(result[0].x) });
-      } else {
-        geocoder.keywordSearch(query, (kResult, kStatus) => {
-          if (kStatus === kakao.maps.services.Status.OK && kResult.length > 0) {
-            resolve({ lat: parseFloat(kResult[0].y), lng: parseFloat(kResult[0].x) });
-          } else {
-            resolve(null);
-          }
-        });
-      }
-    });
-  });
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query + ' 한국')}&format=json&limit=1&accept-language=ko`;
+    const res  = await fetch(url, { headers: { 'Accept-Language': 'ko' } });
+    const data = await res.json();
+    if (data && data.length > 0) {
+      return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 function drawDepartureMarker(coords, label) {
-  if (!kakaoMapInstance) return;
-  clearMap();
+  if (!leafletMap) return;
+  clearMapLayers();
 
-  const pos = new kakao.maps.LatLng(coords.lat, coords.lng);
-  const marker = new kakao.maps.Marker({ position: pos, map: kakaoMapInstance });
-  const iw = new kakao.maps.InfoWindow({
-    content: `<div style="padding:5px 8px;font-size:12px;font-weight:700;color:#333;">🚀 ${label}</div>`,
+  const startIcon = L.divIcon({
+    html: `<div style="background:#7fb3f5;color:#fff;border-radius:50% 50% 50% 0;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:14px;transform:rotate(-45deg);box-shadow:0 2px 8px rgba(0,0,0,0.4)"><span style="transform:rotate(45deg)">🚀</span></div>`,
+    iconSize: [28, 28],
+    iconAnchor: [14, 28],
+    className: '',
   });
-  iw.open(kakaoMapInstance, marker);
+
+  const marker = L.marker([coords.lat, coords.lng], { icon: startIcon })
+    .addTo(leafletMap)
+    .bindPopup(`<strong>🚀 ${label}</strong>`)
+    .openPopup();
+
   currentMarkers.push(marker);
 }
 
@@ -168,11 +155,11 @@ function renderTransitPaths(paths, container) {
   container.innerHTML = `<div class="transit-results-title">🚌 대중교통 경로 ${paths.length}개</div>`;
 
   paths.slice(0, 5).forEach((path, idx) => {
-    const info       = path.info;
-    const subPaths   = path.subPath || [];
-    const totalTime  = info.totalTime;
-    const totalWalk  = info.totalWalk;
-    const busCount   = info.busCount || 0;
+    const info        = path.info;
+    const subPaths    = path.subPath || [];
+    const totalTime   = info.totalTime;
+    const totalWalk   = info.totalWalk;
+    const busCount    = info.busCount || 0;
     const subwayCount = info.subwayCount || 0;
 
     let typeLabel = '🚌 버스';
@@ -182,19 +169,18 @@ function renderTransitPaths(paths, container) {
     const routeTags = subPaths
       .filter(sp => sp.trafficType === 1 || sp.trafficType === 2)
       .map(sp => {
-        const isSub = sp.trafficType === 1;
+        const isSub    = sp.trafficType === 1;
         const lineName = isSub ? (sp.lane?.[0]?.name || '지하철') : (sp.lane?.[0]?.busNo || '버스');
         return `<span class="transit-tag ${isSub ? 'subway' : 'bus'}">${lineName}</span>`;
       }).join('<span class="transit-arrow">→</span>');
 
     const subPathDetails = subPaths.map(sp => {
-      if (sp.trafficType === 3) {
+      if (sp.trafficType === 3)
         return `<div class="subpath-row"><span class="subpath-icon">🚶</span><span class="subpath-info subpath-walk">도보 ${sp.sectionTime}분</span></div>`;
-      } else if (sp.trafficType === 1) {
+      if (sp.trafficType === 1)
         return `<div class="subpath-row"><span class="subpath-icon">🚇</span><span class="subpath-info"><strong>${sp.startName}</strong> 승차 → <strong>${sp.endName}</strong> 하차 (${sp.stationCount}역)</span></div>`;
-      } else if (sp.trafficType === 2) {
+      if (sp.trafficType === 2)
         return `<div class="subpath-row"><span class="subpath-icon">🚌</span><span class="subpath-info"><strong>${sp.startName}</strong> 승차 → <strong>${sp.endName}</strong> 하차 (${sp.stationCount}정류장)</span></div>`;
-      }
       return '';
     }).join('');
 
@@ -224,74 +210,59 @@ function renderTransitPaths(paths, container) {
   });
 
   if (paths.length > 0) {
-    const firstSubPaths = paths[0].subPath || [];
-    drawPathOnMap(firstSubPaths, colors[0]);
+    drawPathOnMap(paths[0].subPath || [], colors[0]);
     container.querySelectorAll('.transit-card')[0]?.classList.add('selected');
   }
 }
 
 function drawPathOnMap(subPaths, color) {
-  if (!kakaoMapInstance) return;
+  if (!leafletMap) return;
 
-  const prevPolylines = currentPolylines.filter(p => p._isRoute);
-  prevPolylines.forEach(p => p.setMap(null));
-  currentPolylines = currentPolylines.filter(p => !p._isRoute);
+  currentLayers.forEach(l => leafletMap.removeLayer(l));
+  currentLayers = [];
 
-  const allPoints = [];
+  const allLatLngs = [];
 
   subPaths.forEach(sp => {
-    const passStops = sp.passStopList?.stations || [];
-    const points = passStops
+    const stops  = sp.passStopList?.stations || [];
+    const latlngs = stops
       .filter(s => s.x && s.y)
-      .map(s => new kakao.maps.LatLng(parseFloat(s.y), parseFloat(s.x)));
+      .map(s => [parseFloat(s.y), parseFloat(s.x)]);
 
-    if (points.length >= 2) {
-      const poly = new kakao.maps.Polyline({
-        path: points,
-        strokeWeight: sp.trafficType === 1 ? 5 : 4,
-        strokeColor: sp.trafficType === 1 ? '#4a90d9' : color,
-        strokeOpacity: 0.85,
-        strokeStyle: sp.trafficType === 3 ? 'dashed' : 'solid',
-        map: kakaoMapInstance,
-      });
-      poly._isRoute = true;
-      currentPolylines.push(poly);
-      allPoints.push(...points);
+    if (latlngs.length >= 2) {
+      const lineColor  = sp.trafficType === 1 ? '#4a90d9' : color;
+      const dashArray  = sp.trafficType === 3 ? '6, 8' : null;
+      const weight     = sp.trafficType === 1 ? 5 : 4;
+
+      const poly = L.polyline(latlngs, {
+        color: lineColor,
+        weight,
+        opacity: 0.85,
+        dashArray,
+      }).addTo(leafletMap);
+
+      currentLayers.push(poly);
+      allLatLngs.push(...latlngs);
     }
   });
 
-  if (allPoints.length > 0) {
-    const bounds = new kakao.maps.LatLngBounds();
-    allPoints.forEach(p => bounds.extend(p));
-    kakaoMapInstance.setBounds(bounds);
+  if (allLatLngs.length > 0) {
+    leafletMap.fitBounds(L.latLngBounds(allLatLngs), { padding: [30, 30] });
   }
 }
 
 function showLongDistance(dest, container) {
   const name = dest.displayName || dest.name;
-  const region = dest.region || '';
 
   container.innerHTML = `
     <div class="transit-long-distance">
       <div class="transit-ld-title">🗺️ ${name}(으)로 가는 방법</div>
       <div class="transit-ld-sub">대중교통 직결 경로를 찾지 못했어요. 아래 링크로 직접 검색해보세요.</div>
       <div class="transit-ld-links">
-        <a class="transit-link-btn train"
-           href="https://www.korail.com/ticket/main.do" target="_blank">
-          🚄 코레일 기차 예매
-        </a>
-        <a class="transit-link-btn express"
-           href="https://www.srt.co.kr" target="_blank">
-          🚅 SRT 고속열차
-        </a>
-        <a class="transit-link-btn intercity"
-           href="https://www.bustago.or.kr" target="_blank">
-          🚌 버스타고 시외/고속
-        </a>
-        <a class="transit-link-btn flight"
-           href="https://flight.naver.com/?from=GMP&to=CJU" target="_blank">
-          ✈️ 항공권 검색
-        </a>
+        <a class="transit-link-btn train" href="https://www.korail.com/ticket/main.do" target="_blank">🚄 코레일 기차 예매</a>
+        <a class="transit-link-btn express" href="https://www.srt.co.kr" target="_blank">🚅 SRT 고속열차</a>
+        <a class="transit-link-btn intercity" href="https://www.bustago.or.kr" target="_blank">🚌 버스타고 시외/고속</a>
+        <a class="transit-link-btn flight" href="https://flight.naver.com/?from=GMP&to=CJU" target="_blank">✈️ 항공권 검색</a>
       </div>
     </div>
   `;
