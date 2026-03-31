@@ -104,34 +104,72 @@ async function searchRoute(dest) {
     return;
   }
 
-  results.innerHTML = `<div class="transit-loading"><div class="loading-spinner"></div><p>경로 탐색 중...</p></div>`;
   if (btn) btn.disabled = true;
 
+  /* 외부 링크는 텍스트 그대로 즉시 표시 */
+  if (transitMode === 'longdist') {
+    showLongDistance({ name: query }, dest, results);
+    if (btn) btn.disabled = false;
+    return;
+  }
+
+  results.innerHTML = `<div class="transit-loading"><div class="loading-spinner"></div><p>경로 탐색 중...</p></div>`;
+
   try {
+    /* 지오코딩 시도 (지도 표시용) */
     const coords = await geocodeQuery(query);
-    if (!coords) {
-      results.innerHTML = '<div class="transit-empty">⚠️ 출발지를 찾을 수 없어요. 더 구체적으로 입력해보세요.</div>';
-      return;
-    }
-    departureCoords = { ...coords, name: query };
+    departureCoords = coords ? { ...coords, name: query } : { name: query };
 
     clearMapLayers();
     addDestMarker(dest);
-    addStartMarker(coords, query);
+    if (coords) addStartMarker(coords, query);
 
     if (transitMode === 'car') {
-      await showCarRoute(coords, dest, results);
+      if (coords) {
+        await showCarRoute(coords, dest, results);
+      } else {
+        /* 지오코딩 실패 시 외부 링크만 제공 */
+        showCarFallback(query, dest, results);
+      }
     } else if (transitMode === 'transit') {
-      await showTransitRoute(coords, dest, results);
-    } else {
-      showLongDistance(coords, dest, results);
+      if (coords) {
+        await showTransitRoute(coords, dest, results);
+      } else {
+        showLongDistance({ name: query }, dest, results);
+      }
     }
   } catch (err) {
     console.error('경로 탐색 오류:', err);
-    results.innerHTML = '<div class="transit-empty">⚠️ 오류가 발생했어요. 다시 시도해주세요.</div>';
+    showLongDistance({ name: query }, dest, results);
   } finally {
     if (btn) btn.disabled = false;
   }
+}
+
+function showCarFallback(depName, dest, container) {
+  const destName    = dest.displayName || dest.name;
+  const kakaoCarUrl = `https://map.kakao.com/?q=${encodeURIComponent(depName + ' to ' + destName)}`;
+  const naverCarUrl = `https://map.naver.com/v5/directions/-/${encodeURIComponent(depName)}/-/${encodeURIComponent(destName)}/-/car`;
+
+  container.innerHTML = `
+    <div class="car-route-card">
+      <div class="car-route-header">
+        <span class="car-route-icon">🚗</span>
+        <div class="car-route-info">
+          <div class="car-route-time" style="font-size:16px">경로 안내</div>
+          <div class="car-route-dist">지도 앱에서 정확한 경로를 확인하세요</div>
+        </div>
+      </div>
+      <div class="car-route-path">
+        <span class="car-node start">${depName}</span>
+        <span class="car-arrow">→</span>
+        <span class="car-node end">${destName}</span>
+      </div>
+      <div class="car-nav-links">
+        <a class="car-nav-btn kakao" href="${kakaoCarUrl}" target="_blank">🗺️ 카카오맵 내비</a>
+        <a class="car-nav-btn naver" href="${naverCarUrl}" target="_blank">🟢 네이버맵 내비</a>
+      </div>
+    </div>`;
 }
 
 function addStartMarker(coords, label) {
@@ -367,14 +405,9 @@ function showLongDistance(start, dest, container) {
   const destName  = dest.displayName || dest.name;
   const startName = start?.name || '';
 
-  /* 네이버 지도 — 출발지·도착지 좌표 자동 적용 */
-  const naverTransitUrl = start
-    ? `https://map.naver.com/v5/directions/${start.lng},${start.lat},${encodeURIComponent(startName)}//${dest.lon},${dest.lat},${encodeURIComponent(destName)}/-/transit`
-    : `https://map.naver.com/v5/search/${encodeURIComponent(destName)}`;
-
-  const naverCarUrl = start
-    ? `https://map.naver.com/v5/directions/${start.lng},${start.lat},${encodeURIComponent(startName)}//${dest.lon},${dest.lat},${encodeURIComponent(destName)}/-/car`
-    : '';
+  /* 네이버 지도 — 텍스트 기반 (좌표 없어도 동작) */
+  const naverTransitUrl = `https://map.naver.com/v5/directions/-/${encodeURIComponent(startName)}/-/${encodeURIComponent(destName)}/-/transit`;
+  const naverCarUrl     = `https://map.naver.com/v5/directions/-/${encodeURIComponent(startName)}/-/${encodeURIComponent(destName)}/-/car`;
 
   /* 코레일 — 역 이름 추출 시도 */
   const korailUrl = `https://www.korail.com/ticket/main.do`;
@@ -393,14 +426,13 @@ function showLongDistance(start, dest, container) {
       <div class="transit-ld-title">🗺️ ${destName}(으)로 가는 방법</div>
       <div class="transit-ld-sub">${startName ? `<strong>${startName}</strong> → <strong>${destName}</strong>` : '출발지를 입력하면 자동으로 경로가 적용됩니다'}</div>
 
-      ${naverTransitUrl ? `
       <div class="transit-ld-section-title">🗺️ 통합 경로 검색</div>
       <div class="transit-ld-links" style="margin-bottom:12px">
         <a class="transit-link-btn" style="background:linear-gradient(135deg,#03c75a,#028a3e)"
            href="${naverTransitUrl}" target="_blank">🚇 네이버맵 대중교통 경로</a>
-        ${naverCarUrl ? `<a class="transit-link-btn" style="background:linear-gradient(135deg,#ff6b35,#e85d04)"
-           href="${naverCarUrl}" target="_blank">🚗 네이버맵 자가용 경로</a>` : ''}
-      </div>` : ''}
+        <a class="transit-link-btn" style="background:linear-gradient(135deg,#ff6b35,#e85d04)"
+           href="${naverCarUrl}" target="_blank">🚗 네이버맵 자가용 경로</a>
+      </div>
 
       <div class="transit-ld-section-title">🎫 직접 예매</div>
       <div class="transit-ld-links">
